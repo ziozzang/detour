@@ -1,6 +1,7 @@
 # Build output
 /detour
 /detour.exe
+/detour-linux
 *.exe~
 
 # go-winres output (regenerated from winres/winres.json on every build).
