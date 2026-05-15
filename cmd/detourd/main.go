@@ -22,10 +22,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"detour/internal/api"
+	"detour/internal/auth"
 	"detour/internal/hostsfile"
 	"detour/internal/linuxnat"
 	"detour/internal/socket"
@@ -59,6 +62,10 @@ func run(argv []string) int {
 		chain     = fs.String("chain", "DETOUR", "iptables chain name (nat table)")
 		iptables  = fs.String("iptables", "iptables", "iptables binary path or name on $PATH")
 		noHosts   = fs.Bool("no-hosts", false, "disable /etc/hosts management; /hosts endpoints return 503")
+		authTok   = fs.String("auth-token", "", "single bearer token accepted on TCP (prefer --auth-token-file for production)")
+		authFile  = fs.String("auth-token-file", "", "file with one bearer token per line; mode must be 0600")
+		authReq   = fs.Bool("auth-required", false, "also require Authorization on the Unix socket (default: socket peers trusted via POSIX perms)")
+		authState = fs.String("auth-state-dir", "/var/lib/detour", "directory for the auto-generated token when --http is set without tokens")
 		showVer   = fs.Bool("version", false, "print version and exit")
 	)
 	fs.Usage = func() {
@@ -113,8 +120,30 @@ func run(argv []string) int {
 	if hostsMgr != nil {
 		hostsBackend = hostsMgr
 	}
-	apiSrv := api.New(natMgr, hostsBackend)
-	handler := apiSrv.Handler()
+
+	// ---- Resolve tokens ----------------------------------------------------
+	tokens, authMode, err := resolveTokens(*authTok, *authFile, *httpAddr != "", *authReq, *authState, logger)
+	if err != nil {
+		_ = natMgr.Close()
+		logger.Printf("auth setup: %v", err)
+		return 1
+	}
+
+	info := api.NewInfo(
+		version, commit, date, *chain,
+		hostsPathOrDisabled(*hostsPath, *noHosts),
+		authMode,
+	)
+	apiSrv := api.NewWithInfo(natMgr, hostsBackend, info)
+	handler := auth.Middleware(apiSrv.Handler(), auth.Options{
+		Tokens:        tokens,
+		EnforceOnUnix: *authReq,
+		AllowUnauthenticated: []string{
+			// Health checks should never need a token; uptime probes
+			// from monitoring systems are the entire point.
+			"/healthz",
+		},
+	})
 
 	// Unix socket: required.
 	unixListener, err := socket.Listen(*sockPath, *sockGroup, mode)
@@ -142,12 +171,14 @@ func run(argv []string) int {
 	unixHTTP := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		BaseContext:       auth.BaseContextFor(unixListener),
 	}
 	var tcpHTTP *http.Server
 	if tcpListener != nil {
 		tcpHTTP = &http.Server{
 			Handler:           handler,
 			ReadHeaderTimeout: 10 * time.Second,
+			BaseContext:       auth.BaseContextFor(tcpListener),
 		}
 	}
 
@@ -179,8 +210,9 @@ func run(argv []string) int {
 	// listener error from the main goroutine.
 	listenErr := make(chan error, 2)
 	go func() {
-		logger.Printf("detourd listening on unix://%s (group=%s mode=%04o chain=%s hosts=%s)",
-			*sockPath, *sockGroup, mode, *chain, hostsPathOrDisabled(*hostsPath, *noHosts))
+		logger.Printf("detourd listening on unix://%s (group=%s mode=%04o chain=%s hosts=%s auth=%s)",
+			*sockPath, *sockGroup, mode, *chain,
+			hostsPathOrDisabled(*hostsPath, *noHosts), authMode)
 		listenErr <- unixHTTP.Serve(unixListener)
 	}()
 	if tcpHTTP != nil {
@@ -231,4 +263,104 @@ func hostsPathOrDisabled(path string, disabled bool) string {
 		return "disabled"
 	}
 	return path
+}
+
+// resolveTokens gathers tokens from the supplied flags, the
+// DETOURD_AUTH_TOKEN environment variable, and (when needed) an
+// auto-generated token persisted under stateDir. Returns the merged
+// TokenSet (nil if no tokens are configured and none required) and a
+// human-readable authMode label ("none" | "tcp" | "all").
+//
+// Bootstrap policy: if the operator enables --http without any token
+// configured anywhere, we synthesise a random token and persist it at
+// stateDir/auth.token (mode 0600). This is the "minimum security"
+// posture: the daemon never accepts unauthenticated requests over TCP.
+func resolveTokens(flagTok, flagFile string, httpEnabled, enforceUnix bool, stateDir string, logger *log.Logger) (*auth.TokenSet, string, error) {
+	var collected []string
+	if flagTok != "" {
+		collected = append(collected, flagTok)
+	}
+	if env := strings.TrimSpace(os.Getenv("DETOURD_AUTH_TOKEN")); env != "" {
+		collected = append(collected, env)
+	}
+	if flagFile != "" {
+		ts, err := auth.LoadTokensFromFile(flagFile)
+		if err != nil {
+			return nil, "", fmt.Errorf("--auth-token-file: %w", err)
+		}
+		collected = append(collected, ts...)
+	}
+
+	if len(collected) == 0 && httpEnabled {
+		// Auto-bootstrap: generate one and write it under stateDir so
+		// the operator can read it back.
+		tok, err := auth.GenerateToken()
+		if err != nil {
+			return nil, "", fmt.Errorf("auto-generate token: %w", err)
+		}
+		path := filepath.Join(stateDir, "auth.token")
+		if err := writeTokenFile(path, tok); err != nil {
+			return nil, "", fmt.Errorf("persist auto-generated token at %s: %w", path, err)
+		}
+		logger.Printf("auto-generated bearer token written to %s (mode 0600); use it as Authorization: Bearer <token>", path)
+		collected = append(collected, tok)
+	}
+
+	if len(collected) == 0 {
+		if enforceUnix {
+			return nil, "", fmt.Errorf("--auth-required set but no tokens configured")
+		}
+		return nil, "none", nil
+	}
+
+	ts := auth.New(collected)
+	if ts.Len() == 0 {
+		// Everything we collected was blank — same outcome as "none".
+		if enforceUnix {
+			return nil, "", fmt.Errorf("--auth-required set but no usable tokens were found")
+		}
+		return nil, "none", nil
+	}
+
+	mode := "tcp"
+	if enforceUnix {
+		mode = "all"
+	}
+	return ts, mode, nil
+}
+
+// writeTokenFile writes token to path with restrictive permissions,
+// creating intermediate directories as needed. The file is replaced
+// atomically (write+rename) so a crashed daemon can't leave a half-
+// written file behind. Existing tokens are overwritten only when the
+// file mode is already 0600; otherwise we refuse and let the operator
+// investigate.
+func writeTokenFile(path, token string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	if st, err := os.Stat(path); err == nil {
+		if st.Mode().Perm()&0o077 != 0 {
+			return fmt.Errorf("refusing to overwrite %s with mode %o (must be <= 0600)", path, st.Mode().Perm())
+		}
+	}
+	tmp, err := os.CreateTemp(dir, ".auth.token-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op if rename succeeds
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.WriteString(token + "\n"); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }

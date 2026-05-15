@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — auth, service management, deeper CLI/UX
+
+- **Bearer-token authentication** (`internal/auth`). The Unix-domain
+  socket stays gated by POSIX permissions (Docker-style trust); TCP
+  always requires `Authorization: Bearer <token>`. If `--http` is
+  enabled without any token, the daemon auto-generates a 64-char
+  random token and persists it to `/var/lib/detour/auth.token` (mode
+  0600) — token-less TCP exposure is now impossible. Constant-time
+  comparison via `crypto/subtle`. `--auth-required` flips Unix-socket
+  enforcement on for shared hosts.
+- New daemon flags: `--auth-token`, `--auth-token-file` (mode-0600
+  enforced, one token per line, `#` comments), `--auth-required`,
+  `--auth-state-dir`. Env var `DETOURD_AUTH_TOKEN` supported.
+- New CLI flags: `--token`, `--token-file`. Env vars `DETOUR_TOKEN`,
+  `DETOUR_TOKEN_FILE`.
+- **`GET /version`** endpoint returns build metadata, chain name,
+  hosts-file path, auth mode, and uptime. `GET /healthz` now also
+  reports `uptime_sec`. `/healthz` bypasses auth so external probes
+  keep working.
+- **`detour service {install,uninstall,status,logs}`** subcommands.
+  Renders a hardened systemd unit (`CAP_NET_ADMIN`,
+  `NoNewPrivileges=true`, `StateDirectory=detour`,
+  `RuntimeDirectory=detour`) and drives `systemctl` for install/
+  enable/disable. `--dry-run` everywhere prints the unit + commands
+  without touching the system; works even when systemd is absent.
+- **`detour status`** — verbose cousin of `info` with version, chain,
+  auth-mode, uptime, rule/host counts.
+- **`detour ping`** — minimal health probe for scripts.
+- **`detour completion {bash|zsh|fish}`** — static shell-completion
+  scripts (subcommands, common flags, no third-party dep).
+- **`detour rule add --dry-run`** — validate flag combination
+  without calling the daemon.
+- Friendlier error messages: connection failures now hint
+  "`is detourd running? Try: sudo systemctl status detourd`" and exit 2
+  (vs 1 for operation failures).
+- Aliases: `rule ls`, `host ls`, `rule remove`/`rule delete`,
+  `host remove`/`host delete`.
+- Web UI gains a token input persisted to `localStorage`; the JS
+  helper now attaches `Authorization: Bearer …` on every request.
+- Korean manual: [`docs/manual.ko.md`](docs/manual.ko.md) — deep
+  end-to-end guide (quick start, daemon/CLI flag reference, auth
+  model, systemd integration, web UI, internals, security, FAQ, API).
+
+### Fixed (small code-review nits)
+
+- `internal/api`: `handleAddHost` normalizes the parsed IP in the
+  response so callers see the canonical form regardless of input
+  whitespace.
+
+## [0.1.0]
+
 ### Changed — major rewrite
 
 `detour` has been rewritten from a single-binary Windows tool (built

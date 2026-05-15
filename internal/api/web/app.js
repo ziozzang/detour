@@ -47,6 +47,8 @@
 
   async function api(method, path, body) {
     const opts = { method, headers: { "Accept": "application/json" } };
+    const tok = localStorage.getItem("detour.token") || "";
+    if (tok) opts.headers["Authorization"] = "Bearer " + tok;
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
@@ -144,6 +146,18 @@
     bindForm("#host-form", "#host-error", (fd) => ({
       hostname: fd.get("hostname"), ip: fd.get("ip"),
     }), "/hosts", refreshHosts);
+
+    // Token persistence: store in localStorage so admins paste it
+    // once. Never sent anywhere except as Authorization header.
+    const tokInput = $("#token-input");
+    const tokSave = $("#token-save");
+    if (tokInput) tokInput.value = localStorage.getItem("detour.token") || "";
+    if (tokSave) tokSave.addEventListener("click", () => {
+      const v = (tokInput.value || "").trim();
+      if (v) localStorage.setItem("detour.token", v);
+      else localStorage.removeItem("detour.token");
+      refreshHealth(); refreshRules(); refreshHosts();
+    });
 
     refreshHealth();
     refreshRules();

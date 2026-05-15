@@ -36,6 +36,7 @@ type Client struct {
 	addr    string // user-supplied address, kept for error messages
 	baseURL string // URL we hand to http.NewRequest
 	http    *http.Client
+	token   string // Bearer token, attached via SetToken; empty by default
 }
 
 // Rule mirrors the JSON shape returned by the daemon. Kept in this
@@ -99,6 +100,12 @@ func IsNotFound(err error) bool {
 //   - "https://host:port"
 //   - "/path/to.sock"         (bare absolute path treated as unix://)
 //   - ""                       (defaults to unix:///run/detour.sock)
+//
+// Each Client owns its own *http.Transport so independent Client
+// instances don't share a connection pool. Per-request deadlines must
+// be supplied via the context passed to each method; we deliberately
+// do not set http.Client.Timeout, which would otherwise shadow
+// callers' context-based cancellation.
 func New(addr string) (*Client, error) {
 	if addr == "" {
 		addr = "unix://" + DefaultSocketPath
@@ -118,12 +125,15 @@ func New(addr string) (*Client, error) {
 			addr:    addr,
 			baseURL: "http://detour", // host portion is irrelevant for unix transport
 			http: &http.Client{
-				Timeout: 30 * time.Second,
 				Transport: &http.Transport{
 					DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 						var d net.Dialer
 						return d.DialContext(ctx, "unix", sockPath)
 					},
+					DisableCompression:    true,
+					MaxIdleConns:          4,
+					IdleConnTimeout:       90 * time.Second,
+					ResponseHeaderTimeout: 30 * time.Second,
 				},
 			},
 		}, nil
@@ -139,8 +149,13 @@ func New(addr string) (*Client, error) {
 			addr:    addr,
 			baseURL: strings.TrimRight(addr, "/"),
 			http: &http.Client{
-				Timeout:   30 * time.Second,
-				Transport: http.DefaultTransport,
+				Transport: &http.Transport{
+					Proxy:                 http.ProxyFromEnvironment,
+					MaxIdleConns:          4,
+					IdleConnTimeout:       90 * time.Second,
+					ResponseHeaderTimeout: 30 * time.Second,
+					ExpectContinueTimeout: 1 * time.Second,
+				},
 			},
 		}, nil
 	}
@@ -150,6 +165,36 @@ func New(addr string) (*Client, error) {
 // Addr returns the address the client was constructed with. Useful for
 // diagnostics.
 func (c *Client) Addr() string { return c.addr }
+
+// SetToken attaches a bearer token sent as `Authorization: Bearer ...`
+// on every subsequent request. An empty string disables the header
+// (default). Tokens may contain any non-control byte except the
+// horizontal tab/newline that would terminate the HTTP header; we
+// don't validate that here — the daemon's auth middleware does.
+func (c *Client) SetToken(token string) { c.token = token }
+
+// Token returns the bearer token currently configured. Empty when none
+// has been set.
+func (c *Client) Token() string { return c.token }
+
+// VersionInfo mirrors GET /version. Fields may be empty when talking
+// to an older daemon that doesn't yet implement the endpoint.
+type VersionInfo struct {
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	BuildDate string `json:"date"`
+	Chain     string `json:"chain"`
+	UptimeSec int64  `json:"uptime_sec"`
+	HostsFile string `json:"hosts_file"`
+	AuthMode  string `json:"auth_mode"`
+}
+
+// Version fetches build/runtime metadata from the daemon.
+func (c *Client) Version(ctx context.Context) (VersionInfo, error) {
+	var out VersionInfo
+	err := c.do(ctx, http.MethodGet, "/version", nil, &out)
+	return out, err
+}
 
 // Ping issues GET /healthz. Returns nil on a 200 response.
 func (c *Client) Ping(ctx context.Context) error {
@@ -224,6 +269,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, outPtr any) 
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

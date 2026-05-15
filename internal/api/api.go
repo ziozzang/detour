@@ -26,6 +26,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"detour/internal/hostsfile"
 	"detour/internal/linuxnat"
@@ -51,6 +52,34 @@ type HostsBackend interface {
 type Server struct {
 	nat   NATBackend
 	hosts HostsBackend
+	info  Info
+}
+
+// Info is the metadata surfaced by GET /version and the uptime portion
+// of GET /healthz. Construct via NewInfo so StartedAt is captured
+// consistently.
+type Info struct {
+	Version   string
+	Commit    string
+	BuildDate string
+	Chain     string
+	HostsFile string // empty if hosts management disabled
+	AuthMode  string // "none" | "tcp" | "all"
+	StartedAt time.Time
+}
+
+// NewInfo stamps StartedAt with time.Now and returns the populated
+// Info. Use this from daemons; tests can construct Info directly.
+func NewInfo(version, commit, buildDate, chain, hostsFile, authMode string) Info {
+	return Info{
+		Version:   version,
+		Commit:    commit,
+		BuildDate: buildDate,
+		Chain:     chain,
+		HostsFile: hostsFile,
+		AuthMode:  authMode,
+		StartedAt: time.Now(),
+	}
 }
 
 // New builds a Server bound to the given backends. Either backend may
@@ -58,6 +87,13 @@ type Server struct {
 // can still introspect /healthz and the other resource.
 func New(nat NATBackend, hosts HostsBackend) *Server {
 	return &Server{nat: nat, hosts: hosts}
+}
+
+// NewWithInfo is like New but also stamps the daemon's build/runtime
+// info for GET /version. Older callers using New() keep working
+// (version returns zero-valued fields).
+func NewWithInfo(nat NATBackend, hosts HostsBackend, info Info) *Server {
+	return &Server{nat: nat, hosts: hosts, info: info}
 }
 
 // Handler returns the http.Handler implementing the API surface.
@@ -68,6 +104,7 @@ func New(nat NATBackend, hosts HostsBackend) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /version", s.handleVersion)
 	mux.HandleFunc("GET /rules", s.handleListRules)
 	mux.HandleFunc("POST /rules", s.handleAddRule)
 	mux.HandleFunc("DELETE /rules/{id}", s.handleDeleteRule)
@@ -114,7 +151,27 @@ type errorResponse struct {
 // --- handlers ---------------------------------------------------------------
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	body := map[string]any{"status": "ok"}
+	if !s.info.StartedAt.IsZero() {
+		body["uptime_sec"] = int64(time.Since(s.info.StartedAt).Seconds())
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
+	var uptime int64
+	if !s.info.StartedAt.IsZero() {
+		uptime = int64(time.Since(s.info.StartedAt).Seconds())
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":    s.info.Version,
+		"commit":     s.info.Commit,
+		"date":       s.info.BuildDate,
+		"chain":      s.info.Chain,
+		"hosts_file": s.info.HostsFile,
+		"auth_mode":  s.info.AuthMode,
+		"uptime_sec": uptime,
+	})
 }
 
 func (s *Server) handleListRules(w http.ResponseWriter, _ *http.Request) {
@@ -214,17 +271,19 @@ func (s *Server) handleAddHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "hostname required")
 		return
 	}
-	if net.ParseIP(strings.TrimSpace(req.IP)) == nil {
+	ipTrim := strings.TrimSpace(req.IP)
+	parsedIP := net.ParseIP(ipTrim)
+	if parsedIP == nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid ip %q", req.IP))
 		return
 	}
-	id, err := s.hosts.Add(req.Hostname, req.IP)
+	id, err := s.hosts.Add(req.Hostname, ipTrim)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, hostResponse{
-		ID: id, Hostname: strings.ToLower(strings.TrimSpace(req.Hostname)), IP: req.IP,
+		ID: id, Hostname: strings.ToLower(strings.TrimSpace(req.Hostname)), IP: parsedIP.String(),
 	})
 }
 

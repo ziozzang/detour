@@ -131,20 +131,29 @@ Then open <http://127.0.0.1:8080/>.
 Usage: detour [global flags] <command> [args]
 
 Global flags:
-  --host ADDR     daemon address: unix:///path | http://host:port
-                  (env: DETOUR_HOST; default unix:///run/detour.sock)
-  --json          print JSON instead of tables
-  --timeout DUR   per-call timeout (default 10s)
+  --host ADDR        daemon address: unix:///path | http://host:port
+                     (env: DETOUR_HOST; default unix:///run/detour.sock)
+  --token TOKEN      bearer token for HTTP auth (env: DETOUR_TOKEN)
+  --token-file PATH  read bearer token from file (env: DETOUR_TOKEN_FILE)
+  --json             print JSON instead of tables
+  --timeout DUR      per-call timeout (default 10s)
 
 Commands:
-  version         show client version
-  info            show daemon health and basic info
-  rule list       list installed DNAT rules
-  rule add        install a DNAT rule (--from --to [--proto])
-  rule rm <id>    remove a DNAT rule by ID
-  host list       list managed /etc/hosts entries
-  host add        add a managed /etc/hosts entry (--hostname --ip)
-  host rm <id>    remove a managed /etc/hosts entry by ID
+  version              show client version
+  ping                 fast health probe (exit 0 = ok)
+  info                 show daemon health and counts
+  status               verbose layout (version, chain, auth-mode, uptime)
+  rule list            list installed DNAT rules            (alias: rule ls)
+  rule add             install a DNAT rule (--from --to [--proto] [--dry-run])
+  rule rm <id>         remove a DNAT rule by ID             (aliases: remove, delete)
+  host list            list managed /etc/hosts entries      (alias: host ls)
+  host add             add an /etc/hosts entry (--hostname --ip)
+  host rm <id>         remove a host entry by ID            (aliases: remove, delete)
+  service install      install the systemd unit (writes /etc/systemd/system/detourd.service)
+  service uninstall    stop, disable, and remove the unit
+  service status       show systemctl status of detourd
+  service logs         tail journalctl -u detourd
+  completion {bash|zsh|fish}   print shell-completion script
 ```
 
 ### Examples
@@ -170,6 +179,127 @@ detour --json rule list | jq '.[] | select(.proto=="tcp")'
 
 ---
 
+## Authentication (token auth)
+
+The Unix-domain socket is gated by POSIX group permissions (same model
+Docker uses), so on the local box you don't need a token. **As soon as
+you expose the daemon over TCP with `--http`, a bearer token is
+required.** detourd will refuse to serve TCP requests that don't carry
+`Authorization: Bearer <token>`.
+
+You have three ways to configure tokens (any combination works; they
+are merged):
+
+```sh
+# 1. Single token on the command line (visible in /proc — prefer the file).
+sudo ./detourd --http 127.0.0.1:8080 --auth-token 'my-secret-token'
+
+# 2. Token via environment variable (e.g. systemd EnvironmentFile=).
+DETOURD_AUTH_TOKEN='my-secret-token' sudo -E ./detourd --http :8080
+
+# 3. One token per line in a file mode 0600 — the recommended option.
+sudo install -m 0600 /dev/stdin /etc/detour/tokens <<EOF
+# operators
+e7a4...64hex
+# CI bot
+9f2b...64hex
+EOF
+sudo ./detourd --http :8080 --auth-token-file /etc/detour/tokens
+```
+
+If you start `detourd --http` **without** any token configured, the
+daemon refuses to silently leave the listener unauthenticated:
+instead, it auto-generates a 64-character random token, writes it to
+`/var/lib/detour/auth.token` (mode `0600`), logs the path, and uses
+that token for the lifetime of the process. Look for a line like:
+
+```
+auto-generated bearer token written to /var/lib/detour/auth.token (mode 0600); ...
+```
+
+On the client side, point the CLI at the token (env var, flag, or
+file):
+
+```sh
+export DETOUR_TOKEN="$(sudo cat /var/lib/detour/auth.token)"
+detour --host http://10.0.0.5:8080 status
+
+# Or:
+detour --host http://10.0.0.5:8080 --token-file ~/.config/detour/token rule list
+```
+
+The web UI has a token input in the top bar — paste the token once and
+it's saved in `localStorage` (never sent anywhere except as the
+`Authorization` header).
+
+`GET /healthz` always bypasses auth so external uptime probes work
+without a credential. Everything else (including `/version`) needs
+the token on TCP.
+
+If you want to enforce token auth on the Unix socket too (e.g. a
+shared host where simply being in the `detour` group isn't enough),
+add `--auth-required`.
+
+> **Threat model**: this is a single-secret bearer token — anyone who
+> can read it can drive the daemon. It protects against unauthenticated
+> network attackers and casual scans. If you need richer guarantees
+> (per-user identity, mTLS, audit trails), front detourd with a
+> reverse proxy.
+
+---
+
+## Service installation (systemd)
+
+The CLI can write a systemd unit for you, run `daemon-reload`, and
+optionally `enable --now`:
+
+```sh
+sudo detour service install \
+    --binary /usr/local/bin/detourd \
+    --http 127.0.0.1:8080 \
+    --auth-token-file /etc/detour/tokens \
+    --enable
+```
+
+Inspect the unit it would produce without touching the system:
+
+```sh
+detour service install --dry-run --http :8080 | less
+```
+
+Check the live unit state at any time (machine-readable with `--json`):
+
+```sh
+detour service status
+# UNIT     detourd.service
+# LOADED   loaded
+# ACTIVE   active (running)
+# ENABLED  enabled
+# PID      4242
+# SINCE    Sat 2026-05-15 22:30:00 UTC
+
+detour service logs --tail 50 --follow   # journalctl -u detourd
+```
+
+Uninstall (optionally purging `/var/lib/detour`):
+
+```sh
+sudo detour service uninstall --purge
+```
+
+If systemd isn't present on the host, `detour service install` and
+`status` refuse with a clear error; `--dry-run` still works.
+
+---
+
+## 한국어 매뉴얼
+
+자세한 한국어 사용 설명서는 [`docs/manual.ko.md`](docs/manual.ko.md)
+파일을 참고하세요. 빠른 시작부터 데몬/CLI 옵션, 토큰 인증, systemd
+서비스 등록, 트러블슈팅, 전체 API 레퍼런스까지 깊이 있게 다룹니다.
+
+---
+
 ## HTTP API
 
 All endpoints accept and return JSON. Errors come as
@@ -178,8 +308,25 @@ All endpoints accept and return JSON. Errors come as
 ### `GET /healthz`
 
 ```json
-{"status": "ok"}
+{"status": "ok", "uptime_sec": 3600}
 ```
+
+### `GET /version`
+
+```json
+{
+  "version":    "1.2.3",
+  "commit":     "abcdef0",
+  "date":       "2026-05-15T00:00:00Z",
+  "chain":      "DETOUR",
+  "hosts_file": "/etc/hosts",
+  "auth_mode":  "tcp",
+  "uptime_sec": 3600
+}
+```
+
+`auth_mode` is one of `none`, `tcp` (auth enforced on TCP only), or
+`all` (auth enforced everywhere).
 
 ### `POST /rules`
 

@@ -35,7 +35,23 @@ header h1 {
   font-size: 1.5rem;
 }
 
-.status { font-size: 0.85rem; color: var(--muted); }
+.status { font-size: 0.85rem; color: var(--muted); display: flex; align-items: center; gap: 0.5rem; }
+.status input[type="password"] {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  font-size: 0.85rem;
+  width: 18ch;
+}
+.status button {
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
 
 .dot {
   display: inline-block;

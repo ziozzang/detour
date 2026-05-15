@@ -200,3 +200,24 @@ which is fragile and intentionally not relied upon).
   goroutine; nothing in the handlers blocks longer than the
   iptables/file-write call.
 - The race detector is run in CI (`go test -race ./...`).
+
+## Authentication layer
+
+`internal/auth` adds a thin bearer-token middleware around the API
+mux. The threat model is documented in `manual.ko.md` §9 and the
+package doc comment, but the short version is:
+
+- Unix socket peers are trusted by default (POSIX permissions act as
+  authn). `--auth-required` flips that.
+- TCP peers always need `Authorization: Bearer <token>` (except
+  `/healthz`, which bypasses auth so monitoring works).
+- If `--http` is enabled without any token configured, the daemon
+  auto-generates one and persists it to `/var/lib/detour/auth.token`
+  (mode 0600). Token-less network exposure is impossible by
+  construction.
+- Token comparison uses `crypto/subtle.ConstantTimeCompare` to defeat
+  timing oracles.
+
+Listener kind (`unix` vs `tcp`) is tagged on each request via
+`http.Server.BaseContext` so the middleware can make the right call
+without sniffing connections.
