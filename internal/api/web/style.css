@@ -1,0 +1,132 @@
+:root {
+  --fg: #1a1a1a;
+  --muted: #6a6a6a;
+  --bg: #fafafa;
+  --card: #ffffff;
+  --border: #e5e5e5;
+  --accent: #1d6fcc;
+  --danger: #c0392b;
+  --ok: #27ae60;
+  --warn: #d49b1a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+  margin: 0;
+  font-weight: 600;
+  font-size: 1.5rem;
+}
+
+.status { font-size: 0.85rem; color: var(--muted); }
+
+.dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-right: 0.4rem;
+  vertical-align: middle;
+}
+.dot-ok      { background: var(--ok); }
+.dot-down    { background: var(--danger); }
+.dot-unknown { background: var(--warn); }
+
+main {
+  max-width: 1000px;
+  margin: 1.5rem auto;
+  padding: 0 1.5rem;
+}
+
+section {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+section h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+section h2 small {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 0.85em;
+  margin-left: 0.5rem;
+}
+
+form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+input, select, button {
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--card);
+}
+
+input { flex: 1; min-width: 180px; }
+
+button {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+  cursor: pointer;
+}
+button:hover { filter: brightness(1.05); }
+button.danger { background: var(--danger); border-color: var(--danger); }
+
+.error {
+  color: var(--danger);
+  font-size: 0.85rem;
+  min-height: 1.2em;
+  margin-bottom: 0.3rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+th, td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+th { font-weight: 500; color: var(--muted); font-size: 0.85rem; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr.empty td { color: var(--muted); font-style: italic; }
+
+footer {
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding: 1rem;
+}
+footer a { color: var(--muted); }

@@ -61,6 +61,10 @@ func New(nat NATBackend, hosts HostsBackend) *Server {
 }
 
 // Handler returns the http.Handler implementing the API surface.
+// Includes the embedded browsable web UI:
+//
+//	GET /            -> web/index.html
+//	GET /static/...  -> embedded JS/CSS
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
@@ -70,6 +74,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /hosts", s.handleListHosts)
 	mux.HandleFunc("POST /hosts", s.handleAddHost)
 	mux.HandleFunc("DELETE /hosts/{id}", s.handleDeleteHost)
+	// Web UI: explicit GET on "/" so the JSON API paths above keep
+	// their semantics, plus an embedded asset directory.
+	mux.HandleFunc("GET /{$}", s.handleIndex)
+	mux.HandleFunc("GET /static/{file...}", s.handleStatic)
 	return mux
 }
 
