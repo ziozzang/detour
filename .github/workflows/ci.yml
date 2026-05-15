@@ -23,6 +23,35 @@ jobs:
       - name: go test (dnat)
         run: go test ./internal/dnat/... -v
 
+      - name: go test (Linux-side packages)
+        run: go test ./internal/hostsfile/... ./internal/linuxnat/... ./internal/api/... -v
+
+  build-linux:
+    name: Build (linux/amd64)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./internal/hostsfile/... ./internal/linuxnat/... ./internal/api/... ./cmd/detour-linux/...
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+
+      - name: go build (detour-linux)
+        run: go build -trimpath -ldflags "-s -w" -o detour-linux ./cmd/detour-linux
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+
   build:
     name: Build (windows/amd64)
     runs-on: ubuntu-latest

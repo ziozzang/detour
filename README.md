@@ -110,3 +110,98 @@ Subsequent runs of the same binary reuse this cache. A different build (differen
 `detour` is released under the **GPLv3** license. See [LICENSE](LICENSE) for details.
 
 The runtime dependency [WinDivert](https://github.com/basil00/WinDivert) is dual-licensed **LGPLv3 / GPLv2**; this project relies on the LGPLv3 terms. When distributing builds, include the WinDivert license text alongside (the upstream copy lives at `third_party/WinDivert-2.2.2-A/LICENSE`).
+
+## Linux runtime — `detour-linux`
+
+A separate Linux daemon under [`cmd/detour-linux`](cmd/detour-linux) offers the same conceptual feature set (transparent destination redirection + ad-hoc hostname overrides) using kernel mechanisms native to Linux:
+
+- **`iptables`** rules in the `nat` table (a dedicated `DETOUR` chain hooked from `OUTPUT` and `PREROUTING`) replace WinDivert. Add, remove, and list rules at runtime; the chain is flushed and removed on shutdown.
+- **`/etc/hosts`** entries can be added on the fly, bracketed by sentinel comments, and are stripped automatically when the daemon exits (SIGINT/SIGTERM).
+- A small **JSON-over-HTTP API** is the control surface — set rules and host overrides with `curl`, no GUI.
+
+### Requirements
+
+- Linux with `iptables` (legacy or `iptables-nft` — both speak the same CLI)
+- Go 1.23+ to build
+- `root` (CAP_NET_ADMIN) at runtime
+
+### Build
+
+```sh
+GOOS=linux CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o detour-linux ./cmd/detour-linux
+```
+
+### Run
+
+```sh
+sudo ./detour-linux --listen :8080
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--listen` | `:8080` | HTTP API listen address |
+| `--hosts-file` | `/etc/hosts` | path of the hosts file managed on-the-fly |
+| `--chain` | `DETOUR` | iptables chain (created in the `nat` table) |
+| `--iptables` | `iptables` | iptables binary path / name on `$PATH` |
+| `--no-hosts` | — | disable `/etc/hosts` management; `/hosts` returns 503 |
+| `--version` | — | print version and exit |
+
+### API examples
+
+The two scenarios from the original feature spec, expressed as `curl` calls:
+
+```sh
+# 0.0.0.0:1234 -> 127.0.0.1:2234 (any local IP, port 1234 -> upstream)
+curl -sS -X POST localhost:8080/rules \
+  -H 'content-type: application/json' \
+  -d '{"from":"0.0.0.0:1234","to":"127.0.0.1:2234","proto":"tcp"}'
+
+# foo.com -> 10.2.3.4 (transient /etc/hosts entry, removed on shutdown)
+curl -sS -X POST localhost:8080/hosts \
+  -H 'content-type: application/json' \
+  -d '{"hostname":"foo.com","ip":"10.2.3.4"}'
+
+# Inspect / remove
+curl -sS localhost:8080/rules
+curl -sS localhost:8080/hosts
+curl -sS -X DELETE localhost:8080/rules/<id>
+curl -sS -X DELETE localhost:8080/hosts/<id>
+curl -sS localhost:8080/healthz
+```
+
+| Verb / path | Body | Result |
+|---|---|---|
+| `GET /healthz` | — | `{"status":"ok"}` |
+| `GET /rules` | — | array of installed DNAT rules |
+| `POST /rules` | `{"from":"IP:PORT","to":"IP:PORT","proto":"tcp\|udp\|both"}` | `201` with `{id,...}`. `proto` defaults to `both`. |
+| `DELETE /rules/{id}` | — | `204`; `404` if id unknown |
+| `GET /hosts` | — | array of managed hosts entries |
+| `POST /hosts` | `{"hostname":"...","ip":"..."}` | `201` with `{id,...}` |
+| `DELETE /hosts/{id}` | — | `204`; `404` if id unknown |
+
+`from` is a literal `IP:PORT`. `0.0.0.0` on the `from` side is special: it matches *any* local destination IP on the given port, so the rule covers traffic targeted at any of the machine's interfaces.
+
+### How it works
+
+- Every rule becomes an `iptables -t nat -A DETOUR -p <proto> [-d <from-ip>] --dport <from-port> -j DNAT --to-destination <to>` invocation. Rules also carry an `iptables` comment (`detour:<id>`) so manual inspection (`iptables -t nat -S DETOUR`) is straightforward.
+- For `tcp+udp` (`proto:"both"`) the daemon installs two rules under the same id and removes them atomically.
+- DNAT to `127.0.0.1` only works for traffic that arrives on a non-loopback interface if `net.ipv4.conf.all.route_localnet=1`. The daemon flips this sysctl when needed and restores the previous value on shutdown.
+- Host overrides land between sentinel comments inside the hosts file (`# >>> detour managed >>>` / `# <<< detour managed <<<`). The file is rewritten atomically (temp file + `rename`); content outside the managed block is preserved verbatim.
+
+### Cleanup guarantees
+
+On `SIGINT`/`SIGTERM` the daemon:
+
+1. Stops accepting new HTTP requests.
+2. Removes the managed `/etc/hosts` block (and only that block).
+3. Unhooks `DETOUR` from `OUTPUT` and `PREROUTING`, flushes the chain, and deletes it.
+4. Restores `route_localnet` if it was changed.
+
+If the process is killed with `SIGKILL` instead, the next clean restart re-uses (and flushes) the existing chain and strips any leftover managed `/etc/hosts` block — so a hard kill is recoverable but cleanup is deferred until the next start.
+
+### Limitations
+
+- IPv4 only (matches the rest of detour).
+- DNAT only — there's no kernel-level reverse-mapping for stateful TCP that originates from the daemon's host *to* the original `from` address; this is the same redirect model as the Windows side.
+- Requires Linux kernel `iptables` (legacy or nftables-backed CLI). Pure-`nft` mode is not implemented.
+
