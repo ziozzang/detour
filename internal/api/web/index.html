@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>detour</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>detour</h1>
+    <div class="status">
+      <span id="status-dot" class="dot dot-unknown" title="daemon health"></span>
+      <span id="status-text">connecting…</span>
+      <input id="token-input" type="password" placeholder="Bearer token (optional)" autocomplete="off">
+      <button type="button" id="token-save">Save token</button>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>Port redirects <small>iptables DNAT</small></h2>
+      <form id="rule-form">
+        <input name="from" placeholder="from IP:PORT (e.g. 0.0.0.0:1234)" required>
+        <input name="to" placeholder="to IP:PORT (e.g. 127.0.0.1:2234)" required>
+        <select name="proto">
+          <option value="both">both</option>
+          <option value="tcp">tcp</option>
+          <option value="udp">udp</option>
+        </select>
+        <button type="submit">Add rule</button>
+      </form>
+      <div class="error" id="rule-error"></div>
+      <table id="rules-table">
+        <thead>
+          <tr><th>ID</th><th>From</th><th>To</th><th>Proto</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Host overrides <small>/etc/hosts</small></h2>
+      <form id="host-form">
+        <input name="hostname" placeholder="hostname (e.g. foo.com)" required>
+        <input name="ip" placeholder="IP (e.g. 10.2.3.4)" required>
+        <button type="submit">Add host</button>
+      </form>
+      <div class="error" id="host-error"></div>
+      <table id="hosts-table">
+        <thead>
+          <tr><th>ID</th><th>Hostname</th><th>IP</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer>
+    <a href="/healthz">/healthz</a> &middot;
+    <a href="/rules">/rules</a> &middot;
+    <a href="/hosts">/hosts</a>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

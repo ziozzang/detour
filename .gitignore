@@ -1,23 +1,9 @@
 # Build output
 /detour
-/detour.exe
-*.exe~
-
-# go-winres output (regenerated from winres/winres.json on every build).
-# Both root (CLI) and cmd/detour-gui (GUI) need a copy linked into their
-# respective binaries.
-*.syso
+/detourd
 
 # GoReleaser output
 /dist/
-
-# Dev-time artifacts: WinDivert SDK extract
-/third_party/
-
-# Dev-time leftovers (driver may register from old paths during testing)
-/WinDivert.dll
-/WinDivert64.sys
-/WinDivert32.sys
 
 # Go
 /vendor/
@@ -27,4 +13,3 @@
 .idea/
 *.swp
 .DS_Store
-Thumbs.db

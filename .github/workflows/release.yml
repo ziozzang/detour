@@ -9,30 +9,49 @@ permissions:
   contents: write
 
 jobs:
-  goreleaser:
+  release:
+    name: Build & attach binaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Install go-winres
+      - name: Determine version
+        id: ver
         run: |
-          go install github.com/tc-hib/go-winres@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          # 동일 step에서 PATH 변경은 후속 step에만 적용되지만,
-          # GoReleaser hook은 child shell에서 실행되어 PATH 상속이 불안정할 수 있다.
-          # 안전을 위해 .goreleaser.yaml hook에서도 절대 경로로 호출한다.
+          tag="${GITHUB_REF_NAME}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "commit=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
-      - uses: goreleaser/goreleaser-action@v6
+      - name: Build (linux/amd64 + linux/arm64)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for ARCH in amd64 arm64; do
+            for BIN in detourd detour; do
+              GOOS=linux GOARCH=${ARCH} go build \
+                -trimpath \
+                -ldflags "-s -w -X main.version=${{ steps.ver.outputs.tag }} -X main.commit=${{ steps.ver.outputs.commit }} -X main.date=${{ steps.ver.outputs.date }}" \
+                -o dist/${BIN}-linux-${ARCH} ./cmd/${BIN}
+            done
+            tar -C dist -czf dist/detour_${{ steps.ver.outputs.tag }}_linux_${ARCH}.tar.gz \
+              detourd-linux-${ARCH} detour-linux-${ARCH}
+          done
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
+          ls -la dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          distribution: goreleaser
-          version: '~> v2'
-          args: release --clean
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
